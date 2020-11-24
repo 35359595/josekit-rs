@@ -1,5 +1,13 @@
 #[cfg(feature = "open-ssl")]
 use openssl::hash::MessageDigest;
+#[cfg(feature = "native")]
+use ring::digest::{
+    Algorithm,
+    SHA1_FOR_LEGACY_USE_ONLY,
+    SHA256,
+    SHA384,
+    SHA512
+};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -28,13 +36,22 @@ impl HashAlgorithm {
             Self::Sha512 => 64,
         }
     }
-
+    #[cfg(feature = "open-ssl")]
     pub(crate) fn message_digest(&self) -> MessageDigest {
         match self {
             Self::Sha1 => MessageDigest::sha1(),
             Self::Sha256 => MessageDigest::sha256(),
             Self::Sha384 => MessageDigest::sha384(),
             Self::Sha512 => MessageDigest::sha512(),
+        }
+    }
+    #[cfg(feature = "native")]
+    pub(crate) fn message_digest(&self) -> Algorithm {
+        match self {
+            Self::Sha1 => SHA1_FOR_LEGACY_USE_ONLY,
+            Self::Sha256 => SHA256,
+            Self::Sha384 => SHA384,
+            Self::Sha512 => SHA512,
         }
     }
 }
