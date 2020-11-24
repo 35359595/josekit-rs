@@ -3,8 +3,11 @@ use std::fmt::Display;
 use std::ops::Deref;
 
 use anyhow::bail;
+#[cfg(feature = "open-ssl")]
 use openssl::hash::MessageDigest;
+#[cfg(feature = "open-ssl")]
 use openssl::pkey::{PKey, Private, Public};
+#[cfg(feature = "open-ssl")]
 use openssl::rsa::Padding;
 
 use crate::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
@@ -552,9 +555,13 @@ mod tests {
 
 mod openssl_rsa_oaep {
     use foreign_types::ForeignType;
+    #[cfg(features = "open-ssl")]
     use openssl::error::ErrorStack;
+    #[cfg(features = "open-ssl")]
     use openssl::hash::MessageDigest;
+    #[cfg(features = "open-ssl")]
     use openssl::pkey::{PKey, Private, Public};
+    #[cfg(features = "open-ssl")]
     use openssl_sys::{
         EVP_PKEY_CTX_ctrl, EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_CTX_set_rsa_mgf1_md,
         EVP_PKEY_CTX_set_rsa_padding, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_encrypt,

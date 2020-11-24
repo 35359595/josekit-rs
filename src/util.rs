@@ -4,8 +4,20 @@ pub mod oid;
 
 use anyhow::bail;
 use once_cell::sync::Lazy;
+#[cfg(feature = "open-ssl")]
 use openssl::bn::BigNumRef;
+#[cfg(feature = "open-ssl")]
 use openssl::rand;
+#[cfg(feature = "native")]
+use rand::{
+    RngCore,
+    rngs::OsRng,
+};
+#[cfg(feature = "native")]
+use ramp::ll::{
+    base::to_base,
+    limb_ptr::Limbs,
+};
 use regex::{self, bytes};
 
 pub use crate::util::hash_algorithm::HashAlgorithm;
@@ -16,8 +28,9 @@ pub use HashAlgorithm::Sha384 as SHA_384;
 pub use HashAlgorithm::Sha512 as SHA_512;
 
 pub fn random_bytes(len: usize) -> Vec<u8> {
-    let mut vec = vec![0; len];
-    rand::rand_bytes(&mut vec).unwrap();
+    let mut vec: Vec<u8> = Vec::with_capacity(len);
+    OsRng.fill_bytes(&mut vec);
+
     vec
 }
 
@@ -67,8 +80,28 @@ pub(crate) fn parse_pem(input: &[u8]) -> anyhow::Result<(String, Vec<u8>)> {
     Ok(result)
 }
 
+#[cfg(feature = "open-ssl")]
 pub(crate) fn num_to_vec(num: &BigNumRef, len: usize) -> Vec<u8> {
     let vec = num.to_vec();
+    if vec.len() < len {
+        let mut tmp = Vec::with_capacity(len);
+        for _ in 0..(len - vec.len()) {
+            tmp.push(0);
+        }
+        tmp.extend_from_slice(&vec);
+        tmp
+    } else {
+        vec
+    }
+}
+
+#[cfg(feature = "native")]
+// TODO: confirm if this is corrent
+pub(crate) fn num_to_vec(num: Limbs, len: usize) -> Vec<u8> {
+    let mut vec: Vec<u8> = vec!();
+    unsafe {
+        to_base(10, num, len as i32, |i| vec.push(i));
+    }
     if vec.len() < len {
         let mut tmp = Vec::with_capacity(len);
         for _ in 0..(len - vec.len()) {

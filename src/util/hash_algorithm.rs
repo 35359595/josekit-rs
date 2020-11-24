@@ -1,3 +1,4 @@
+#[cfg(feature = "open-ssl")]
 use openssl::hash::MessageDigest;
 use std::fmt::Display;
 
