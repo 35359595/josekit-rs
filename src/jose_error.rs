@@ -28,4 +28,16 @@ pub enum JoseError {
 
     #[error("Invalid signature: {0}")]
     InvalidSignature(#[source] anyhow::Error),
+
+    #[error(transparent)]
+    KeyRejectedRingError(#[from] ring::error::KeyRejected),
+
+    #[error(transparent)]
+    UnspecifiedRingErorr(#[from] ring::error::Unspecified),
+
+    #[error(transparent)]
+    DecodeError(#[from] base64::DecodeError),
+
+    #[error("Generic error occured: {0}")]
+    Generic(String),
 }

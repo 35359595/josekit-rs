@@ -5,8 +5,14 @@ use std::ops::Deref;
 use anyhow::bail;
 #[cfg(feature = "open-ssl")]
 use openssl::hash::MessageDigest;
+#[cfg(feature = "native")]
+use ring::digest::Algorithm;
 #[cfg(feature = "open-ssl")]
 use openssl::pkey::{PKey, Private, Public};
+#[cfg(feature = "native")]
+use ring::{
+    signature::RsaKeyPair as RingRsaKeyPair,
+};
 #[cfg(feature = "open-ssl")]
 use openssl::rsa::Padding;
 
@@ -100,6 +106,7 @@ impl RsaesJweAlgorithm {
         })
     }
 
+    #[cfg(feature = "open-ssl")]
     pub fn encrypter_from_der(
         &self,
         input: impl AsRef<[u8]>,
@@ -113,9 +120,7 @@ impl RsaesJweAlgorithm {
                     spki_der_vec.as_slice()
                 }
             };
-
             let public_key = PKey::public_key_from_der(spki_der)?;
-
             let rsa = public_key.rsa()?;
             if rsa.size() * 8 < 2048 {
                 bail!("key length must be 2048 or more.");
@@ -128,6 +133,26 @@ impl RsaesJweAlgorithm {
             })
         })()
         .map_err(|err| JoseError::InvalidKeyFormat(err))
+    }
+
+    #[cfg(feature = "native")]
+    pub fn encrypter_from_der(
+        &self,
+        input: impl AsRef<[u8]>,
+    ) -> Result<RsaesJweEncrypter, JoseError> {
+        let keypair = RingRsaKeyPair::from_pkcs8(input.as_ref())
+            .map_err(|_| JoseError::RingError)?;
+        let public_key = PKey::public_key_from_der(spki_der)?;
+        let rsa = public_key.rsa()?;
+        if rsa.size() * 8 < 2048 {
+            bail!("key length must be 2048 or more.");
+        }
+
+        Ok(RsaesJweEncrypter {
+            algorithm: self.clone(),
+            public_key,
+            key_id: None,
+        })
     }
 
     pub fn encrypter_from_pem(

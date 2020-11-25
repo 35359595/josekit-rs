@@ -3,7 +3,10 @@ use std::fmt::Display;
 use std::ops::Deref;
 
 use anyhow::bail;
+#[cfg(feature = "open-ssl")]
 use openssl::symm::{self, Cipher};
+#[cfg(feature = "native")]
+use ring::aead;
 
 use crate::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use crate::jwk::Jwk;
@@ -158,11 +161,21 @@ impl AesgcmkwJweAlgorithm {
         }
     }
 
+    #[cfg(feature = "open-ssl")]
     fn cipher(&self) -> Cipher {
         match self {
             Self::A128gcmkw => Cipher::aes_128_gcm(),
             Self::A192gcmkw => Cipher::aes_192_gcm(),
             Self::A256gcmkw => Cipher::aes_256_gcm(),
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn cipher(&self) -> aead::Algorithm {
+        match self {
+            Self::A128gcmkw => aead::AES_128_GCM,
+            Self::A256gcmkw => aead::AES_256_GCM,
+            _ => aead::CHACHA20_POLY1305,
         }
     }
 }
@@ -233,6 +246,7 @@ impl JweEncrypter for AesgcmkwJweEncrypter {
         Ok(None)
     }
 
+    #[cfg(feature = "open-ssl")]
     fn encrypt(
         &self,
         key: &[u8],
@@ -259,6 +273,34 @@ impl JweEncrypter for AesgcmkwJweEncrypter {
             Ok(err) => err,
             Err(err) => JoseError::InvalidKeyFormat(err),
         })
+    }
+
+    // TODO: why _in_header is not used?
+    #[cfg(feature = "native")]
+    fn encrypt(
+        &self,
+        key: &[u8],
+        _in_header: &JweHeader,
+        out_header: &mut JweHeader
+    ) -> Result<Option<Vec<u8>>, JoseError> {
+        let iv = util::random_bytes(32);
+        let nonce = aead::Nonce::try_assume_unique_for_key(&iv[0..aead::NONCE_LEN])?;
+        let cipher = self.algorithm.cipher();
+        let mut tag = [0; 16];
+        let key = aead::UnboundKey::new(&cipher, &self.private_key)?;
+        let sealing_key = aead::LessSafeKey::new(key);
+        let mut encrypted_key: Vec<u8> = vec!();
+        let tag = sealing_key
+            .seal_in_place_separate_tag(nonce, aead::Aad::empty(), &mut encrypted_key)?;
+
+        // TODO: not 100% sure on these two...
+        let iv = base64::encode_config(&iv, base64::URL_SAFE_NO_PAD);
+        out_header.set_claim("iv", Some(Value::String(iv)))?;
+
+        let tag = base64::encode_config(&tag, base64::URL_SAFE_NO_PAD);
+        out_header.set_claim("tag", Some(Value::String(tag)))?;
+
+        Ok(Some(encrypted_key))
     }
 
     fn box_clone(&self) -> Box<dyn JweEncrypter> {
@@ -303,6 +345,7 @@ impl JweDecrypter for AesgcmkwJweDecrypter {
         }
     }
 
+    #[cfg(feature = "open-ssl")]
     fn decrypt(
         &self,
         encrypted_key: Option<&[u8]>,
@@ -340,6 +383,50 @@ impl JweDecrypter for AesgcmkwJweDecrypter {
             Ok(Cow::Owned(key))
         })()
         .map_err(|err| JoseError::InvalidJweFormat(err))
+    }
+
+    #[cfg(feature = "native")]
+    fn decrypt(
+        &self,
+        encrypted_key: Option<&[u8]>,
+        _cencryption: &dyn JweContentEncryption,
+        header: &JweHeader,
+    ) -> Result<Cow<[u8]>, JoseError> {
+        let mut the_key = match encrypted_key {
+            Some(val) => val,
+            None => return Err(JoseError::Generic("A encrypted_key is required.".into())),
+        };
+
+        let iv = match header.claim("iv") {
+            Some(Value::String(val)) => 
+                base64::decode_config(val, base64::URL_SAFE_NO_PAD)?,
+            Some(_) => 
+                return Err(JoseError::Generic("The iv header claim must be string.".into())),
+            None => 
+                return Err(JoseError::Generic("The iv header claim is required.".into())),
+        };
+
+        let tag = match header.claim("tag") {
+            Some(Value::String(val)) => 
+                base64::decode_config(val, base64::URL_SAFE_NO_PAD)?,
+            Some(_) => 
+                return Err(JoseError::Generic("The tag header claim must be string.".into())),
+            None => 
+                return Err(JoseError::Generic("The tag header claim is required.".into())),
+        };
+
+        let cipher = self.algorithm.cipher();
+        let nonce = aead::Nonce::try_assume_unique_for_key(&iv[0..aead::NONCE_LEN])?;
+        let key = aead::UnboundKey::new(&cipher, &self.private_key)?;
+        let opening_key = aead::LessSafeKey::new(key);
+
+        let decrypted_key = 
+            opening_key.open_in_place(
+                nonce,
+                aead::Aad::empty(),
+                &mut the_key
+            )?;
+        Ok(Cow::Owned(decrypted_key.to_vec()))
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {

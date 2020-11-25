@@ -30,7 +30,7 @@ foreign-types = "0.3.1"
 openssl = { version = "0.10", optional = true }
 openssl-sys = { version = "0.9", optional = true }
 # native Rust feature dependancies
-ring = { version = "0.16.16", optional = true }
+ring = { version = "0.16.16", features = ["std"], optional = true }
 k256 = { version = "0.5.9", features = ["ecdsa", "ecdsa-core", "sha256", "keccak256", "zeroize"], optional = true }
 rand = { version = "0.7.3", optional = true }
 ramp = { version = "0.5", optional = true }
