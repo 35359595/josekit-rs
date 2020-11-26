@@ -3,7 +3,19 @@ use std::fmt::Display;
 use std::ops::Deref;
 
 use anyhow::bail;
+#[cfg(feature = "open-ssl")]
 use openssl::aes::{self, AesKey};
+#[cfg(feature = "native")]
+use aes::{
+    Aes128,
+    Aes192,
+    Aes256,
+    cipher::{
+        BlockCipher,
+        NewBlockCipher,
+        generic_array::GenericArray,
+    },
+};
 
 use crate::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use crate::jwk::Jwk;
@@ -224,6 +236,7 @@ impl JweEncrypter for AeskwJweEncrypter {
         Ok(None)
     }
 
+    #[cfg(feature = "open-ssl")]
     fn encrypt(
         &self,
         key: &[u8],
@@ -249,6 +262,29 @@ impl JweEncrypter for AeskwJweEncrypter {
             Ok(Some(encrypted_key))
         })()
         .map_err(|err| JoseError::InvalidKeyFormat(err))
+    }
+
+    // TODO: What's the point of returning Option<*> here if None never returned?
+    #[cfg(feature = "native")]
+    fn encrypt(
+        &self,
+        key: &[u8],
+        _in_header: &JweHeader,
+        _out_header: &mut JweHeader
+    ) -> Result<Option<Vec<u8>>, JoseError> {
+        let mut cipher_key = GenericArray::clone_from_slice(key);
+        match &self.algorithm {
+            A128kw =>
+                Aes128::new(&GenericArray::from_slice(&self.private_key))
+                    .encrypt_block(&mut cipher_key),
+            Aes192 =>
+                Aes192::new(GenericArray::from_slice(&self.private_key))
+                    .encrypt_block(&mut cipher_key),
+            A256kw =>
+                Aes256::new(GenericArray::from_slice(&self.private_key))
+                    .encrypt_block(&mut cipher_key),
+        };
+        Ok(Some(cipher_key.to_vec()))
     }
 
     fn box_clone(&self) -> Box<dyn JweEncrypter> {
@@ -293,6 +329,7 @@ impl JweDecrypter for AeskwJweDecrypter {
         }
     }
 
+    #[cfg(feature = "open-ssl")]
     fn decrypt(
         &self,
         encrypted_key: Option<&[u8]>,
@@ -323,6 +360,32 @@ impl JweDecrypter for AeskwJweDecrypter {
             Ok(Cow::Owned(key))
         })()
         .map_err(|err| JoseError::InvalidJweFormat(err))
+    }
+
+    #[cfg(feature = "native")]
+    fn decrypt(
+        &self,
+        encrypted_key: Option<&[u8]>,
+        _cencryption: &dyn JweContentEncryption,
+        _header: &JweHeader
+    ) -> Result<Cow<[u8]>, JoseError> {
+        if let Some(encrypted_key) = encrypted_key {
+            let mut cipher_key = GenericArray::clone_from_slice(encrypted_key);
+            match &self.algorithm {
+                A128kw =>
+                    Aes128::new(&GenericArray::from_slice(&self.private_key))
+                        .decrypt_block(&mut cipher_key),
+                Aes192 =>
+                    Aes192::new(GenericArray::from_slice(&self.private_key))
+                        .decrypt_block(&mut cipher_key),
+                A256kw =>
+                    Aes256::new(GenericArray::from_slice(&self.private_key))
+                        .decrypt_block(&mut cipher_key),
+            };
+            Ok(Cow::Owned(cipher_key.to_vec()))
+        } else {
+            Err(JoseError::Generic("Nothing to decrypt.".into()))
+        }
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
