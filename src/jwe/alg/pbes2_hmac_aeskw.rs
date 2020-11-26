@@ -4,13 +4,27 @@ use std::fmt::Display;
 use std::ops::Deref;
 
 use anyhow::bail;
+#[cfg(feature = "open-ssl")]
 use openssl::aes::{self, AesKey};
+#[cfg(feature = "open-ssl")]
 use openssl::pkcs5;
+#[cfg(feature = "native")]
+use ring::pbkdf2::{
+    self,
+    PBKDF2_HMAC_SHA1,
+    PBKDF2_HMAC_SHA256,
+    PBKDF2_HMAC_SHA384,
+    PBKDF2_HMAC_SHA512,
+};
+#[cfg(feature = "native")]
+use std::num::NonZeroU32;
 
 use crate::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use crate::jwk::Jwk;
 use crate::util::{self, HashAlgorithm};
 use crate::{JoseError, JoseHeader, Number, Value};
+
+use super::native_aeskw::{decrypt_aeskw, encrypt_aeskw};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Pbes2HmacAeskwJweAlgorithm {
@@ -290,24 +304,46 @@ impl JweEncrypter for Pbes2HmacAeskwJweEncrypter {
 
             let md = self.algorithm.hash_algorithm().message_digest();
             let mut derived_key = vec![0; self.algorithm.derived_key_len()];
-            pkcs5::pbkdf2_hmac(&self.private_key, &salt, p2c, md, &mut derived_key)?;
+            #[cfg(feature = "open-ssl")]
+            {
+                pkcs5::pbkdf2_hmac(&self.private_key, &salt, p2c, md, &mut derived_key)?;
+                let aes = match AesKey::new_encrypt(&derived_key) {
+                    Ok(val) => val,
+                    Err(_) => bail!("Failed to set a encryption key."),
+                };
 
-            let aes = match AesKey::new_encrypt(&derived_key) {
-                Ok(val) => val,
-                Err(_) => bail!("Failed to set a encryption key."),
-            };
-
-            let mut encrypted_key = vec![0; key.len() + 8];
-            match aes::wrap_key(&aes, None, &mut encrypted_key, &key) {
-                Ok(val) => {
-                    if val < encrypted_key.len() {
-                        encrypted_key.truncate(val);
+                let mut encrypted_key = vec![0; key.len() + 8];
+                match aes::wrap_key(&aes, None, &mut encrypted_key, &key) {
+                    Ok(val) => {
+                        if val < encrypted_key.len() {
+                            encrypted_key.truncate(val);
+                        }
                     }
+                    Err(_) => bail!("Failed to wrap a key."),
                 }
-                Err(_) => bail!("Failed to wrap a key."),
-            }
 
-            Ok(Some(encrypted_key))
+                Ok(Some(encrypted_key))
+            }
+            #[cfg(feature = "native")]
+            {
+                let alg = match md {
+                    Sha1 => PBKDF2_HMAC_SHA1,
+                    Sha256 => PBKDF2_HMAC_SHA256,
+                    Sha384 => PBKDF2_HMAC_SHA384,
+                    Sha512 => PBKDF2_HMAC_SHA512
+                };
+                if p2c > u32::MAX as usize { bail!("pbkdf2 iterations overflow."); }
+                if let Some(count) = NonZeroU32::new(p2c as u32) {
+                    pbkdf2::derive(
+                        alg,
+                        count,
+                        &salt,
+                        &self.private_key,
+                        &mut derived_key);
+                } // After previous check this should succeed.
+                
+                Ok(Some(encrypt_aeskw(self.algorithm.derived_key_len(), &self.private_key, key)?))
+            }
         })()
         .map_err(|err| JoseError::InvalidKeyFormat(err))
     }
@@ -393,24 +429,49 @@ impl JweDecrypter for Pbes2HmacAeskwJweDecrypter {
 
             let md = self.algorithm.hash_algorithm().message_digest();
             let mut derived_key = vec![0; self.algorithm.derived_key_len()];
-            pkcs5::pbkdf2_hmac(&self.private_key, &salt, p2c, md, &mut derived_key)?;
+            #[cfg(feature = "open-ssl")]
+            {
+                pkcs5::pbkdf2_hmac(&self.private_key, &salt, p2c, md, &mut derived_key)?;
 
-            let aes = match AesKey::new_decrypt(&derived_key) {
-                Ok(val) => val,
-                Err(_) => bail!("Failed to set a decryption key."),
-            };
+                let aes = match AesKey::new_decrypt(&derived_key) {
+                    Ok(val) => val,
+                    Err(_) => bail!("Failed to set a decryption key."),
+                };
 
-            let mut key = vec![0; encrypted_key.len() - 8];
-            match aes::unwrap_key(&aes, None, &mut key, &encrypted_key) {
-                Ok(val) => {
-                    if val < key.len() {
-                        key.truncate(val);
+                let mut key = vec![0; encrypted_key.len() - 8];
+                match aes::unwrap_key(&aes, None, &mut key, &encrypted_key) {
+                    Ok(val) => {
+                        if val < key.len() {
+                            key.truncate(val);
+                        }
                     }
+                    Err(_) => bail!("Failed to unwrap a key."),
                 }
-                Err(_) => bail!("Failed to unwrap a key."),
-            }
 
-            Ok(Cow::Owned(key))
+                Ok(Cow::Owned(key))
+            }
+            #[cfg(feature = "native")]
+            {
+                let alg = match md {
+                    Sha1 => PBKDF2_HMAC_SHA1,
+                    Sha256 => PBKDF2_HMAC_SHA256,
+                    Sha384 => PBKDF2_HMAC_SHA384,
+                    Sha512 => PBKDF2_HMAC_SHA512
+                };
+                if p2c > u32::MAX as usize { bail!("pbkdf2 iterations overflow."); }
+                if let Some(count) = NonZeroU32::new(p2c as u32) {
+                    pbkdf2::derive(
+                        alg,
+                        count,
+                        &salt,
+                        &self.private_key,
+                        &mut derived_key);
+                } // After previous check this should succeed.
+
+                Ok(Cow::Owned(
+                    decrypt_aeskw(self.algorithm.derived_key_len(), &self.private_key, &encrypted_key)?
+                ))
+            }
         })()
         .map_err(|err| JoseError::InvalidJweFormat(err))
     }

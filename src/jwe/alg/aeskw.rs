@@ -5,21 +5,17 @@ use std::ops::Deref;
 use anyhow::bail;
 #[cfg(feature = "open-ssl")]
 use openssl::aes::{self, AesKey};
-#[cfg(feature = "native")]
-use aes::{
-    Aes128,
-    Aes192,
-    Aes256,
-    cipher::{
-        BlockCipher,
-        NewBlockCipher,
-        generic_array::GenericArray,
-    },
+use crate::jwe::{
+    JweAlgorithm,
+    JweContentEncryption,
+    JweDecrypter,
+    JweEncrypter,
+    JweHeader
 };
-
-use crate::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use crate::jwk::Jwk;
 use crate::{JoseError, Value};
+
+use super::native_aeskw::{decrypt_aeskw, encrypt_aeskw};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum AeskwJweAlgorithm {
@@ -272,19 +268,7 @@ impl JweEncrypter for AeskwJweEncrypter {
         _in_header: &JweHeader,
         _out_header: &mut JweHeader
     ) -> Result<Option<Vec<u8>>, JoseError> {
-        let mut cipher_key = GenericArray::clone_from_slice(key);
-        match &self.algorithm {
-            A128kw =>
-                Aes128::new(&GenericArray::from_slice(&self.private_key))
-                    .encrypt_block(&mut cipher_key),
-            Aes192 =>
-                Aes192::new(GenericArray::from_slice(&self.private_key))
-                    .encrypt_block(&mut cipher_key),
-            A256kw =>
-                Aes256::new(GenericArray::from_slice(&self.private_key))
-                    .encrypt_block(&mut cipher_key),
-        };
-        Ok(Some(cipher_key.to_vec()))
+        Ok(Some(encrypt_aeskw(self.algorithm.key_len(), &self.private_key, key)?))
     }
 
     fn box_clone(&self) -> Box<dyn JweEncrypter> {
@@ -370,19 +354,7 @@ impl JweDecrypter for AeskwJweDecrypter {
         _header: &JweHeader
     ) -> Result<Cow<[u8]>, JoseError> {
         if let Some(encrypted_key) = encrypted_key {
-            let mut cipher_key = GenericArray::clone_from_slice(encrypted_key);
-            match &self.algorithm {
-                A128kw =>
-                    Aes128::new(&GenericArray::from_slice(&self.private_key))
-                        .decrypt_block(&mut cipher_key),
-                Aes192 =>
-                    Aes192::new(GenericArray::from_slice(&self.private_key))
-                        .decrypt_block(&mut cipher_key),
-                A256kw =>
-                    Aes256::new(GenericArray::from_slice(&self.private_key))
-                        .decrypt_block(&mut cipher_key),
-            };
-            Ok(Cow::Owned(cipher_key.to_vec()))
+            Ok(Cow::Owned(decrypt_aeskw(self.algorithm.key_len(), &self.private_key, encrypted_key)?))
         } else {
             Err(JoseError::Generic("Nothing to decrypt.".into()))
         }
